@@ -48,7 +48,7 @@ echo -e "${BLUE}==========================================================${PLAI
 
 # 3. Configure GitHub Repository URL
 # Default to the official repository (baoweise-bot/aimili-vpngate)
-DEFAULT_USER="baoweise-bot"
+DEFAULT_USER="jytx"
 DEFAULT_REPO="aimili-vpngate"
 
 # Allow custom repository override via command line arguments
@@ -707,6 +707,56 @@ def configure_port():
         elif key == '3' or key == 'q' or key == '\x03':
             break
 
+def configure_proxy_auth():
+    cfg = load_ui_cfg()
+    while True:
+        print("\033[H\033[J", end="")
+        print("=======================================================")
+        print("                   代理认证配置菜单                    ")
+        print("=======================================================")
+        curr_user = cfg.get('proxy_username', '')
+        if curr_user:
+            print(f"  当前状态: 已启用 (用户名: {curr_user})")
+        else:
+            print("  当前状态: 未启用（任何人可匿名使用代理）")
+        print("-------------------------------------------------------")
+        print("  [1] 设置代理认证用户名密码")
+        print("  [2] 清除代理认证（允许匿名访问）")
+        print("  [3] 返回主菜单")
+        print("=======================================================")
+        print("请直接输入数字键 [1-3] 快速执行：", end="", flush=True)
+
+        key = getch()
+        if key == '1':
+            print("\033[H\033[J", end="")
+            print("设置代理认证（v2rayN 等客户端连接时需要填写）")
+            print("-------------------------------------------------------")
+            username = input("请输入代理认证用户名 (直接回车取消): ").strip()
+            if not username:
+                continue
+            password = input("请输入代理认证密码 (直接回车取消): ").strip()
+            if not password:
+                print("密码不能为空，已取消。")
+                time.sleep(1.5)
+                continue
+            cfg['proxy_username'] = username
+            cfg['proxy_password'] = password
+            save_ui_cfg(cfg)
+            print(f"\n代理认证已设置！用户名: {username}")
+            print("客户端连接示例:")
+            print(f"  curl -x socks5://{username}:{password}@VPS-IP:{cfg.get('proxy_port', 7928)} https://api.ipify.org")
+            ask_restart()
+            break
+        elif key == '2':
+            cfg['proxy_username'] = ''
+            cfg['proxy_password'] = ''
+            save_ui_cfg(cfg)
+            print("\n代理认证已清除，代理允许匿名访问。")
+            ask_restart()
+            break
+        elif key == '3' or key == 'q' or key == '\x03':
+            break
+
 def configure_credentials():
     cfg = load_ui_cfg()
     while True:
@@ -863,8 +913,10 @@ def main():
             configure_port()
         elif cmd == "password":
             configure_credentials()
+        elif cmd == "proxyauth":
+            configure_proxy_auth()
         else:
-            print("未知命令。可用命令: start, stop, restart, status, logs, update, uninstall, web, port, password")
+            print("未知命令。可用命令: start, stop, restart, status, logs, update, uninstall, web, port, password, proxyauth")
         sys.exit(0)
         
     options = {
@@ -874,9 +926,10 @@ def main():
         '4': ("日志监控 (ml logs)", show_logs),
         '5': ("网页配置 (ml web)", configure_web),
         '6': ("端口配置 (ml port)", configure_port),
-        '7': ("账号密码 (ml password)", configure_credentials),
-        '8': ("一键更新 (ml update)", update_service),
-        '9': ("完全卸载 (ml uninstall)", uninstall_service),
+        '7': ("代理认证 (ml proxyauth)", configure_proxy_auth),
+        '8': ("账号密码 (ml password)", configure_credentials),
+        '9': ("一键更新 (ml update)", update_service),
+        'a': ("完全卸载 (ml uninstall)", uninstall_service),
         '0': ("退出终端", None)
     }
     
@@ -902,7 +955,7 @@ def main():
                 print_line(f"  {green}[0]{reset} {options['0'][0]}")
                 print_line("=======================================================")
                 print_line("提示: 当前为静态页面。按 [回车键/Enter] 手动刷新状态。")
-                print("请直接输入数字键 [0-9] 快速选择执行：\033[K", end="", flush=True)
+                print("请直接输入数字键 [0-9/a] 快速选择执行：\033[K", end="", flush=True)
                 print("\033[J", end="", flush=True)
                 need_redraw = False
                 

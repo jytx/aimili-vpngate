@@ -1,11 +1,55 @@
 #!/usr/bin/env python3
 from __future__ import annotations
+import base64
 import select
 import socket
 import threading
 import urllib.parse
 import time
 from typing import Any
+
+# 代理认证凭据（空字符串表示不启用认证）
+_proxy_username: str = ""
+_proxy_password: str = ""
+
+def configure_auth(username: str, password: str) -> None:
+    """设置代理认证凭据，空字符串表示不启用认证"""
+    global _proxy_username, _proxy_password
+    _proxy_username = username or ""
+    _proxy_password = password or ""
+    if _proxy_username:
+        print(f"[代理认证] 已启用用户名密码认证，用户名: {_proxy_username}", flush=True)
+    else:
+        print("[代理认证] 未设置认证，代理允许匿名访问", flush=True)
+
+def is_auth_enabled() -> bool:
+    """检查是否启用了代理认证"""
+    return bool(_proxy_username)
+
+def check_http_basic_auth(lines: list[str]) -> bool:
+    """检查 HTTP 请求中的 Proxy-Authorization 头，返回是否通过认证"""
+    if not _proxy_username:
+        return True
+    for line in lines[1:]:
+        if line.lower().startswith("proxy-authorization:"):
+            value = line.split(":", 1)[1].strip()
+            if value.lower().startswith("basic "):
+                try:
+                    decoded = base64.b64decode(value[6:]).decode("utf-8", errors="replace")
+                    user, _, pwd = decoded.partition(":")
+                    if user == _proxy_username and pwd == _proxy_password:
+                        return True
+                except Exception:
+                    pass
+    return False
+
+def send_http_auth_required(client: socket.socket) -> None:
+    """返回 HTTP 407 代理认证要求响应"""
+    client.sendall(
+        b"HTTP/1.1 407 Proxy Authentication Required\r\n"
+        b"Proxy-Authenticate: Basic realm=\"proxy\"\r\n"
+        b"Content-Length: 0\r\n\r\n"
+    )
 
 def parse_int(value: Any) -> int:
     try:
@@ -179,7 +223,25 @@ def socks5_client(client: socket.socket, first_byte: bytes) -> None:
     try:
         methods_count = recv_exact(client, 1)[0]
         recv_exact(client, methods_count)
-        client.sendall(b"\x05\x00")
+        if _proxy_username:
+            # 要求用户名密码认证（RFC 1929 方法 0x02）
+            client.sendall(b"\x05\x02")
+            # 认证子协商：版本(1) + 用户名长度(1) + 用户名 + 密码长度(1) + 密码
+            auth_version = recv_exact(client, 1)[0]
+            if auth_version != 0x01:
+                client.sendall(b"\x01\x01")
+                return
+            ulen = recv_exact(client, 1)[0]
+            username = recv_exact(client, ulen).decode("utf-8", errors="replace")
+            plen = recv_exact(client, 1)[0]
+            password = recv_exact(client, plen).decode("utf-8", errors="replace")
+            if username != _proxy_username or password != _proxy_password:
+                client.sendall(b"\x01\x01")
+                return
+            client.sendall(b"\x01\x00")
+        else:
+            # 无需认证
+            client.sendall(b"\x05\x00")
         version, command, _, address_type = recv_exact(client, 4)
         if version != 5 or command != 1:
             client.sendall(b"\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00")
@@ -225,6 +287,10 @@ def http_client(client: socket.socket, first_byte: bytes) -> None:
         header = read_http_header(client, first_byte)
         head, rest = header.split(b"\r\n\r\n", 1)
         lines = head.decode("iso-8859-1", errors="replace").split("\r\n")
+        # HTTP 代理认证检查
+        if not check_http_basic_auth(lines):
+            send_http_auth_required(client)
+            return
         method, target, version = lines[0].split(" ", 2)
         if method.upper() == "CONNECT":
             host, _, port_text = target.partition(":")

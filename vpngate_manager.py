@@ -88,6 +88,8 @@ OPENVPN_AUTH_USER = os.environ.get("OPENVPN_AUTH_USER", "vpn")
 OPENVPN_AUTH_PASS = os.environ.get("OPENVPN_AUTH_PASS", "vpn")
 LOCAL_PROXY_HOST = os.environ.get("LOCAL_PROXY_HOST", "127.0.0.1")
 LOCAL_PROXY_PORT = int(os.environ.get("LOCAL_PROXY_PORT", "7928"))
+PROXY_AUTH_USER = os.environ.get("PROXY_AUTH_USER", "")
+PROXY_AUTH_PASS = os.environ.get("PROXY_AUTH_PASS", "")
 UI_HOST = os.environ.get("UI_HOST", "::")
 UI_PORT = int(os.environ.get("UI_PORT", "8787"))
 INVALID_BACKOFF_SECONDS = int(os.environ.get("INVALID_BACKOFF_SECONDS", str(30 * 60)))
@@ -172,6 +174,8 @@ def load_ui_config() -> dict[str, Any]:
             "password": "",
             "host": "::",
             "port": 8787,
+            "proxy_username": "",
+            "proxy_password": "",
             "routing_mode": "auto",
             "force_country": "",
             "routing_ip_type": "all",
@@ -218,6 +222,10 @@ try:
         UI_PORT = int(_init_cfg["port"])
     if "host" in _init_cfg:
         UI_HOST = _init_cfg["host"]
+    if "proxy_username" in _init_cfg:
+        PROXY_AUTH_USER = _init_cfg["proxy_username"]
+    if "proxy_password" in _init_cfg:
+        PROXY_AUTH_PASS = _init_cfg["proxy_password"]
 except Exception:
     pass
 
@@ -300,6 +308,9 @@ def get_state() -> dict[str, Any]:
     state["port"] = ui_cfg.get("port", 8787)
     state["secret_path"] = ui_cfg.get("secret_path", "EJsW2EeBo9lY")
     state["proxy_port"] = ui_cfg.get("proxy_port", 7928)
+    state["proxy_auth_enabled"] = bool(ui_cfg.get("proxy_username", ""))
+    state["proxy_username"] = ui_cfg.get("proxy_username", "")
+    state["proxy_password"] = ui_cfg.get("proxy_password", "")
     state["routing_mode"] = ui_cfg.get("routing_mode", "auto")
     state["force_country"] = ui_cfg.get("force_country", "")
     state["routing_ip_type"] = ui_cfg.get("routing_ip_type", "all")
@@ -2881,6 +2892,21 @@ INDEX_HTML = r"""<!doctype html>
         </div>
 
         <div style="border-top: 1px dashed rgba(255,255,255,0.08); padding-top: 16px; margin-bottom: 16px;">
+          <div class="form-group" style="margin-bottom: 12px;">
+            <label class="form-label">代理认证（留空表示不启用）</label>
+            <div style="display: flex; gap: 12px;">
+              <div style="flex: 1;">
+                <input type="text" id="net_proxy_username" class="input-field" placeholder="用户名（可选）" autocomplete="off">
+              </div>
+              <div style="flex: 1;">
+                <input type="password" id="net_proxy_password" class="input-field" placeholder="密码（可选）" autocomplete="off">
+              </div>
+            </div>
+            <p style="margin: 4px 0 0 0; font-size: 12px; color: var(--text-secondary);">设置后 v2rayN 等客户端连接时需填写用户名密码，留空则允许匿名访问</p>
+          </div>
+        </div>
+
+        <div style="border-top: 1px dashed rgba(255,255,255,0.08); padding-top: 16px; margin-bottom: 16px;">
           <div class="form-group" style="margin-bottom: 16px;">
             <label class="form-label">IP 出站路由模式</label>
             <input type="hidden" id="net_routing_mode" value="auto">
@@ -3347,7 +3373,8 @@ function render(){
   const statusMessage = state.last_check_message || "";
   const activeNodeInfo = activeNode ? `<span class="badge available" style="margin-left:8px; padding:2px 8px;">${esc(translateCountry(activeNode.country))} (${activeNode.id})</span>` : `<span class="badge unavailable" style="margin-left:8px; padding:2px 8px;">无</span>`;
   const localProxy = state.local_proxy || `http://127.0.0.1:${state.proxy_port || 7928}`;
-  if ($("status")) { $("status").innerHTML=`<span class="status-dot"></span>HTTP 代理本地接口：${localProxy} | 活动节点：${activeNodeInfo} | 状态：${statusMessage}`; }
+  const authBadge = state.proxy_auth_enabled ? ' | <span class="badge available" style="padding:2px 6px; font-size:11px;">🔐 认证已启用</span>' : '';
+  if ($("status")) { $("status").innerHTML=`<span class="status-dot"></span>HTTP 代理本地接口：${localProxy}${authBadge} | 活动节点：${activeNodeInfo} | 状态：${statusMessage}`; }
   
   // Update proxy test status card based on background checks
   const pBadge = $("proxy_status_badge");
@@ -4037,6 +4064,8 @@ function openNetworkModal() {
   
   if (state) {
     $("net_proxy_port").value = state.proxy_port || 7928;
+    $("net_proxy_username").value = state.proxy_username || "";
+    $("net_proxy_password").value = state.proxy_password || "";
     const mode = state.routing_mode || "auto";
     const ipType = state.routing_ip_type || "all";
     
@@ -4066,7 +4095,9 @@ async function saveNetwork(e) {
   const routingMode = $("net_routing_mode").value;
   const forceCountry = $("net_force_country").value;
   const routingIpType = $("net_routing_ip_type").value;
-  
+  const proxyUsername = $("net_proxy_username").value.trim();
+  const proxyPassword = $("net_proxy_password").value.trim();
+
   if (isNaN(proxyPort) || proxyPort < 1024 || proxyPort > 65535) {
     errorDivEl.textContent = "代理出站端口范围必须在 1024 至 65535 之间";
     errorDivEl.style.display = "block";
@@ -4084,7 +4115,13 @@ async function saveNetwork(e) {
     errorDivEl.style.display = "block";
     return;
   }
-  
+
+  if ((proxyUsername && !proxyPassword) || (!proxyUsername && proxyPassword)) {
+    errorDivEl.textContent = "代理认证用户名和密码必须同时填写或同时留空";
+    errorDivEl.style.display = "block";
+    return;
+  }
+
   submitBtn.disabled = true;
   submitBtn.textContent = "正在保存...";
   
@@ -4096,7 +4133,9 @@ async function saveNetwork(e) {
         proxy_port: proxyPort,
         routing_mode: routingMode,
         force_country: forceCountry,
-        routing_ip_type: routingIpType
+        routing_ip_type: routingIpType,
+        proxy_username: proxyUsername,
+        proxy_password: proxyPassword
       })
     });
     
@@ -4920,12 +4959,19 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 length = parse_int(self.headers.get("Content-Length"))
                 payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
-                
+
                 new_proxy_port = payload.get("proxy_port")
                 routing_mode = str(payload.get("routing_mode") or "auto").strip()
                 force_country = str(payload.get("force_country") or "").strip()
                 routing_ip_type = str(payload.get("routing_ip_type") or "all").strip()
-                
+                new_proxy_username = str(payload.get("proxy_username") or "").strip()
+                new_proxy_password = str(payload.get("proxy_password") or "").strip()
+
+                # 代理认证：如果只填了用户名没填密码，或只填了密码没填用户名，报错
+                if bool(new_proxy_username) != bool(new_proxy_password):
+                    self.send_json({"ok": False, "error": "代理认证用户名和密码必须同时填写或同时留空"}, HTTPStatus.BAD_REQUEST)
+                    return
+
                 try:
                     new_proxy_port_int = int(new_proxy_port)
                     if not (1024 <= new_proxy_port_int <= 65535):
@@ -4933,31 +4979,36 @@ class Handler(BaseHTTPRequestHandler):
                 except (TypeError, ValueError):
                     self.send_json({"ok": False, "error": "代理出站端口范围必须是 1024 至 65535"}, HTTPStatus.BAD_REQUEST)
                     return
-                
+
                 if routing_mode not in ("auto", "fixed_ip", "fixed_region", "favorites"):
                     self.send_json({"ok": False, "error": "无效的路由配置模式"}, HTTPStatus.BAD_REQUEST)
                     return
                 if routing_ip_type not in ("all", "residential", "hosting"):
                     self.send_json({"ok": False, "error": "无效的IP出站类型过滤"}, HTTPStatus.BAD_REQUEST)
                     return
-                
+
                 ui_cfg = load_ui_config()
                 expected_proxy_port = ui_cfg.get("proxy_port", 7928)
-                
+
                 if new_proxy_port_int == ui_cfg.get("port", 8787):
                     self.send_json({"ok": False, "error": "代理出站端口不能与网页管理端口相同"}, HTTPStatus.BAD_REQUEST)
                     return
-                
+
                 ui_cfg["proxy_port"] = new_proxy_port_int
                 ui_cfg["routing_mode"] = routing_mode
                 ui_cfg["force_country"] = force_country
                 ui_cfg["routing_ip_type"] = routing_ip_type
-                
+                ui_cfg["proxy_username"] = new_proxy_username
+                ui_cfg["proxy_password"] = new_proxy_password
+
                 auth_file = DATA_DIR / "ui_auth.json"
                 with lock:
                     DATA_DIR.mkdir(exist_ok=True, parents=True)
                     auth_file.write_text(json.dumps(ui_cfg, ensure_ascii=False, indent=2), encoding="utf-8")
-                
+
+                # 代理认证变更可以即时生效，无需重启
+                proxy_server.configure_auth(new_proxy_username, new_proxy_password)
+
                 restart_needed = (new_proxy_port_int != expected_proxy_port)
                 if restart_needed:
                     self.send_json({"ok": True, "restart_needed": True, "message": "配置更新成功，代理出站端口变更，将在 2 秒内重启..."})
@@ -5164,6 +5215,7 @@ def main() -> None:
             "blacklisted_nodes": 0,
         },
     )
+    proxy_server.configure_auth(PROXY_AUTH_USER, PROXY_AUTH_PASS)
     threading.Thread(target=proxy_server.start_proxy_server, args=(LOCAL_PROXY_HOST, LOCAL_PROXY_PORT), daemon=True).start()
     
     # Wait for the gateway to officially start
